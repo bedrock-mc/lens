@@ -113,10 +113,11 @@ class GhidraBackend:
             with pyghidra.program_context(project, project_path) as program:
                 from ghidra.program.util import GhidraProgramUtilities
 
+                monitor = pyghidra.task_monitor(timeout)
                 if GhidraProgramUtilities.shouldAskToAnalyze(program):
-                    _analyze_program(pyghidra, program, timeout)
-                    program.save("Bedrock Lens analysis", pyghidra.task_monitor())
-                functions = _extract_functions(program)
+                    _analyze_program(pyghidra, program, monitor, timeout)
+                    program.save("Bedrock Lens analysis", monitor)
+                functions = _extract_functions(program, monitor=monitor, timeout=timeout)
 
         return GhidraAnalysis(
             ghidra_version=self.version,
@@ -259,12 +260,11 @@ def _project_coordinates(path: Path) -> tuple[str, str]:
     return f"artifact_{digest[:16]}", f"{path.stem}_{digest[:12]}"
 
 
-def _analyze_program(pyghidra, program, timeout: int | None) -> None:
+def _analyze_program(pyghidra, program, monitor, timeout: int | None) -> None:
     from ghidra.app.plugin.core.analysis import AutoAnalysisManager
     from ghidra.app.script import GhidraScriptUtil
     from ghidra.program.util import GhidraProgramUtilities
 
-    monitor = pyghidra.task_monitor(timeout)
     with pyghidra.transaction(program, "Bedrock Lens analysis"):
         GhidraScriptUtil.acquireBundleHostReference()
         try:
@@ -279,14 +279,29 @@ def _analyze_program(pyghidra, program, timeout: int | None) -> None:
             GhidraScriptUtil.releaseBundleHostReference()
 
 
-def _extract_functions(program) -> tuple[FunctionEvidence, ...]:
+def _extract_functions(
+    program, *, monitor=None, timeout: int | None = None
+) -> tuple[FunctionEvidence, ...]:
+    """Extract function and referenced-string evidence with bounded JNI passes.
+
+    String references are collected by building one address map and walking the
+    program's reference index once.  Looking up references separately for every
+    string creates a large amount of Java/Python bridge overhead on large binaries.
+    """
     image_base = program.getImageBase()
     function_manager = program.getFunctionManager()
     reference_manager = program.getReferenceManager()
     strings: dict[int, set[StringEvidence]] = defaultdict(set)
+    strings_by_address: dict[int, StringEvidence] = {}
+
+    _raise_if_cancelled(monitor, timeout, "string discovery")
 
     defined_data = program.getListing().getDefinedData(True)
+    data_count = 0
     while defined_data.hasNext():
+        data_count += 1
+        if data_count & 0xFFF == 0:
+            _raise_if_cancelled(monitor, timeout, "string discovery")
         data = defined_data.next()
         if not data.hasStringValue():
             continue
@@ -297,18 +312,44 @@ def _extract_functions(program) -> tuple[FunctionEvidence, ...]:
             address = int(data.getAddress().subtract(image_base))
         except Exception:
             continue
-        references = reference_manager.getReferencesTo(data.getAddress())
-        while references.hasNext():
-            reference = references.next()
+        strings_by_address[address] = StringEvidence(address=address, value=str(value))
+
+    references = reference_manager.getReferenceIterator(image_base)
+    function_entries: dict[int, int | None] = {}
+    reference_count = 0
+    while references.hasNext():
+        reference_count += 1
+        if reference_count & 0xFFF == 0:
+            _raise_if_cancelled(monitor, timeout, "string references")
+        reference = references.next()
+        try:
+            target_rva = int(reference.getToAddress().subtract(image_base))
+            source_rva = int(reference.getFromAddress().subtract(image_base))
+        except Exception:
+            continue
+        string = strings_by_address.get(target_rva)
+        if string is None:
+            continue
+
+        if source_rva not in function_entries:
             function = function_manager.getFunctionContaining(reference.getFromAddress())
             if function is None or function.isExternal():
-                continue
-            entry = int(function.getEntryPoint().subtract(image_base))
-            strings[entry].add(StringEvidence(address=address, value=str(value)))
+                function_entries[source_rva] = None
+            else:
+                function_entries[source_rva] = int(
+                    function.getEntryPoint().subtract(image_base)
+                )
+        entry = function_entries[source_rva]
+        if entry is not None:
+            strings[entry].add(string)
 
     evidence: list[FunctionEvidence] = []
     functions = function_manager.getFunctions(True)
+    function_count = 0
     while functions.hasNext():
+        function_count += 1
+        if function_count & 0xFFF == 0:
+            _raise_if_cancelled(monitor, timeout, "function extraction")
         function = functions.next()
         if function.isExternal():
             continue
@@ -330,3 +371,11 @@ def _extract_functions(program) -> tuple[FunctionEvidence, ...]:
             )
         )
     return tuple(evidence)
+
+
+def _raise_if_cancelled(monitor, timeout: int | None, phase: str) -> None:
+    if monitor is None or not monitor.isCancelled():
+        return
+    if timeout is None:
+        raise TimeoutError(f"Ghidra {phase} was cancelled")
+    raise TimeoutError(f"Ghidra {phase} exceeded {timeout} seconds")

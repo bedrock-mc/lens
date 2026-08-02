@@ -177,14 +177,13 @@ class Catalog:
     ) -> None:
         with self._connection:
             self._connection.execute("DELETE FROM functions WHERE artifact_id = ?", (artifact_id,))
-            for function in functions:
-                row = self._connection.execute(
-                    """
-                    INSERT INTO functions (
-                        artifact_id, rva, name, namespace, size, parameter_count
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    RETURNING id
-                    """,
+            self._connection.executemany(
+                """
+                INSERT INTO functions (
+                    artifact_id, rva, name, namespace, size, parameter_count
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
                     (
                         artifact_id,
                         function.rva,
@@ -192,17 +191,27 @@ class Catalog:
                         function.namespace,
                         function.size,
                         function.parameter_count,
-                    ),
-                ).fetchone()
-                if row is None:
-                    raise RuntimeError("SQLite did not return a function ID")
-                self._connection.executemany(
-                    """
-                    INSERT INTO function_strings (function_id, address, value)
-                    VALUES (?, ?, ?)
-                    """,
-                    ((row["id"], string.address, string.value) for string in function.strings),
+                    )
+                    for function in functions
+                ),
+            )
+            function_ids = {
+                row["rva"]: row["id"]
+                for row in self._connection.execute(
+                    "SELECT id, rva FROM functions WHERE artifact_id = ?", (artifact_id,)
                 )
+            }
+            self._connection.executemany(
+                """
+                INSERT INTO function_strings (function_id, address, value)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    (function_ids[function.rva], string.address, string.value)
+                    for function in functions
+                    for string in function.strings
+                ),
+            )
 
     def search(self, query: str, *, limit: int = 50) -> list[SearchHit]:
         if not query.strip():

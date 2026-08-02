@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -12,6 +13,13 @@ class BSimError(RuntimeError):
 
 def database_url(path: str | Path) -> str:
     return f"file:{Path(path).expanduser().resolve()}"
+
+
+def project_url(path: str | Path) -> str:
+    normalized = Path(path).expanduser().resolve().as_posix()
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    return f"ghidra:{normalized}"
 
 
 class BSimIndex:
@@ -25,7 +33,8 @@ class BSimIndex:
         self.install_dir = Path(install_dir).expanduser().resolve()
         self.database_path = Path(database_path).expanduser().resolve()
         self.template = template
-        self._executable = self.install_dir / "support/bsim"
+        executable_name = "bsim.bat" if os.name == "nt" else "bsim"
+        self._executable = self.install_dir / "support" / executable_name
         if not self._executable.is_file():
             raise BSimError(f"BSim executable not found: {self._executable}")
 
@@ -43,11 +52,14 @@ class BSimIndex:
         """Generate and commit signatures for every program in a Ghidra project."""
         self.create()
         project = Path(project_dir).expanduser().resolve() / project_name
-        self._run("generatesigs", f"ghidra:{project}", "--bsim", self.url)
+        self._run("generatesigs", project_url(project), "--bsim", self.url)
 
     def _run(self, *arguments: str) -> str:
+        command = (str(self._executable), *arguments)
+        if self._executable.suffix.lower() in {".bat", ".cmd"}:
+            command = ("cmd.exe", "/d", "/c", *command)
         completed = subprocess.run(
-            (str(self._executable), *arguments),
+            command,
             check=False,
             capture_output=True,
             text=True,
