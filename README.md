@@ -30,11 +30,12 @@ Lens uses Python 3.12. Ghidra 12 or newer must be installed. Lens discovers Home
 
 ## Reproducible corpus acquisition
 
-The packaged manifest contains the x64 Windows client packages for 1.16.201.2 and 1.20.40.1.
-It stores no Minecraft binaries: `lens` resolves the Microsoft Store update identity, downloads
-the package, verifies its SHA-256, extracts the exact executable, verifies its PE architecture and
-PDB identity, and then registers it in the catalog. The first download is large; subsequent runs
-reuse the content-addressed cache.
+The packaged manifest contains x64 Windows client packages for 1.16.201.2 and 1.20.40.1, plus the
+current x64 Windows BDS package (1.26.36.1 at the time of writing). It stores no Minecraft
+binaries: `lens` resolves Microsoft Store identities for the clients and the official Minecraft
+download API for BDS, downloads each package, verifies its SHA-256, extracts the exact executable,
+verifies its PE architecture and PDB identity, and then registers it in the catalog. The first
+download is large; subsequent runs reuse the content-addressed cache.
 
 ```bash
 # See the immutable entries shipped with Lens.
@@ -58,11 +59,13 @@ delete and rebuild. Store package resolution uses update identities maintained b
 own the relevant Minecraft package and comply with Microsoft/Mojang terms; Lens does not bypass
 Store entitlement checks or redistribute packages.
 
-For BDS, use the same manifest format with a direct official URL, the expected archive SHA-256,
-and `member = "bedrock_server.exe"` (or `bedrock_server` for Linux). Historical BDS URLs are not
-published as a stable official index, so they should be pinned by the project that records them;
-Lens will reject a changed archive rather than silently accepting a replacement. The current
-official download page is [Minecraft Bedrock Server Download](https://www.minecraft.net/en-us/download/server/bedrock).
+The packaged BDS entry is zero-configuration: `lens corpus sync` asks the official Minecraft
+download API for the stable Windows link, then verifies it against the manifest's pinned archive,
+executable, and PDB identities. If Mojang publishes a new BDS build, synchronization fails closed
+until the manifest is updated with the new version and hashes; an existing cache remains
+reproducible. Custom manifests can use `type = "bds_latest"` with `platform = "windows"` or
+`"linux"`, or a direct `type = "url"` for a historically pinned URL. The official download page is
+[Minecraft Bedrock Server Download](https://www.minecraft.net/en-us/download/server/bedrock).
 
 ## End-to-end workflow
 

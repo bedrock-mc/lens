@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import ssl
 import uuid
 import xml.etree.ElementTree as ET
@@ -16,6 +17,7 @@ import certifi
 STORE_DOWNLOAD_ENDPOINT = (
     "https://fe3.delivery.mp.microsoft.com/ClientWebService/client.asmx/secured"
 )
+BDS_DOWNLOAD_API = "https://net-secondary.web.minecraft-services.net/api/v1.0/download/links"
 BDS_DOWNLOAD_PAGE = "https://www.minecraft.net/en-us/download/server/bedrock"
 
 _SOAP = "http://www.w3.org/2003/05/soap-envelope"
@@ -170,8 +172,60 @@ def parse_bds_download_url(page: str, platform: str) -> str:
     raise SourceResolutionError(f"official BDS page has no {platform} download link")
 
 
-def resolve_latest_bds_url(platform: str, *, timeout: float = 30) -> str:
-    request = Request(BDS_DOWNLOAD_PAGE, headers={"User-Agent": "Bedrock-Lens/0.1"})
+def parse_bds_download_links(response: bytes, platform: str, *, preview: bool = False) -> str:
+    """Select a stable or preview BDS URL from Minecraft's official download API."""
+    if platform not in {"windows", "linux"}:
+        raise ValueError("BDS platform must be 'windows' or 'linux'")
+    download_type = "serverBedrock"
+    if preview:
+        download_type += "Preview"
+    download_type += platform.capitalize()
+    try:
+        payload = json.loads(response)
+    except json.JSONDecodeError as exc:
+        raise SourceResolutionError("official BDS API returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise SourceResolutionError("official BDS API returned an invalid response object")
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise SourceResolutionError("official BDS API returned no result object")
+    links = result.get("links", [])
+    if not isinstance(links, list):
+        raise SourceResolutionError("official BDS API returned no links array")
+    for link in links:
+        if not isinstance(link, dict) or link.get("downloadType") != download_type:
+            continue
+        value = link.get("downloadUrl")
+        if not isinstance(value, str):
+            continue
+        parsed = urlparse(value)
+        if (
+            parsed.scheme == "https"
+            and parsed.hostname in {"www.minecraft.net", "minecraft.azureedge.net"}
+            and parsed.path.lower().endswith(".zip")
+        ):
+            return value
+    raise SourceResolutionError(
+        f"official BDS API has no {'preview ' if preview else ''}{platform} download link"
+    )
+
+
+def resolve_bds_download_url(
+    platform: str, *, preview: bool = False, timeout: float = 30
+) -> str:
+    request = Request(
+        BDS_DOWNLOAD_API,
+        headers={
+            "Accept": "application/json",
+            "Accept-Language": "*",
+            "User-Agent": "Bedrock-Lens/0.1",
+        },
+    )
     with _open(request, timeout=timeout) as response:
-        page = response.read().decode("utf-8", errors="replace")
-    return parse_bds_download_url(page, platform)
+        payload = response.read()
+    return parse_bds_download_links(payload, platform, preview=preview)
+
+
+def resolve_latest_bds_url(platform: str, *, timeout: float = 30) -> str:
+    """Resolve the current stable BDS URL from Microsoft's download service."""
+    return resolve_bds_download_url(platform, timeout=timeout)

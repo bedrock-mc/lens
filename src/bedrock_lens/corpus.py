@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from .pe import inspect_pe
-from .sources import resolve_store_download_url, tls_context
+from .sources import resolve_bds_download_url, resolve_store_download_url, tls_context
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -29,6 +29,8 @@ class SourceSpec:
     url: str | None = None
     update_id: str | None = None
     revision: int = 1
+    platform: str | None = None
+    preview: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +93,14 @@ def _parse_source(table: object) -> SourceSpec:
         if not isinstance(revision, int) or revision < 1:
             raise ValueError("Store source revision must be a positive integer")
         return SourceSpec(type=source_type, update_id=update_id, revision=revision)
+    if source_type == "bds_latest":
+        platform = str(_required(table, "platform", str))
+        if platform not in {"windows", "linux"}:
+            raise ValueError("BDS source platform must be 'windows' or 'linux'")
+        preview = table.get("preview", False)
+        if not isinstance(preview, bool):
+            raise ValueError("BDS source preview must be a boolean")
+        return SourceSpec(type=source_type, platform=platform, preview=preview)
     raise ValueError(f"unsupported corpus source type: {source_type}")
 
 
@@ -237,6 +247,8 @@ class CorpusFetcher:
             return source.url
         if source.type == "store" and source.update_id is not None:
             return resolve_store_download_url(source.update_id, revision=source.revision)
+        if source.type == "bds_latest" and source.platform is not None:
+            return resolve_bds_download_url(source.platform, preview=source.preview)
         raise ValueError(f"incomplete source specification: {source.type}")
 
     def _download(self, url: str, destination: Path, artifact_id: str) -> None:

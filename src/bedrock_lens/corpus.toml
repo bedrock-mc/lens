@@ -36,3 +36,19 @@ pdb_age = 1
 type = "store"
 update_id = "cf4bd0ca-bcac-4b31-b09b-7973c61643d1"
 revision = 1
+
+[[artifact]]
+id = "server-1.26.36.1-windows"
+version = "1.26.36.1"
+kind = "server"
+channel = "retail"
+archive_sha256 = "ca3e9463a793aefb22f02b7baade1bbc9196d54514386d1acbec7c32fabc30d4"
+binary_sha256 = "52a6684a7851ca16bb0e643c924e43b50f771e56319ff7e3629dc6654411e435"
+member = "bedrock_server.exe"
+machine = "amd64"
+pdb_guid = "1be0853f-17ee-4030-4c4c-44205044422e"
+pdb_age = 1
+
+[artifact.source]
+type = "bds_latest"
+platform = "windows"

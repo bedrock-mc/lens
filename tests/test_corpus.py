@@ -106,3 +106,26 @@ url = "https://example.invalid/client.appx"
 
     with pytest.raises(ValueError, match="SHA-256"):
         load_manifest(manifest)
+
+
+def test_manifest_accepts_a_bds_latest_source(tmp_path: Path) -> None:
+    manifest = tmp_path / "bds.toml"
+    manifest.write_text(
+        '''schema = 1
+[[artifact]]
+id = "server-latest-windows"
+version = "1.26.36.1"
+kind = "server"
+archive_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+binary_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+member = "bedrock_server.exe"
+[artifact.source]
+type = "bds_latest"
+platform = "windows"
+''',
+        encoding="utf-8",
+    )
+
+    spec = load_manifest(manifest).artifacts[0]
+    assert spec.source.type == "bds_latest"
+    assert spec.source.platform == "windows"
