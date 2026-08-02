@@ -11,13 +11,29 @@ from typing import Any
 
 from .bsim import BSimIndex
 from .catalog import Artifact, Catalog
+from .corpus import ArtifactSpec, CorpusFetcher, FetchResult, load_manifest
 from .evidence import SearchHit
 from .ghidra import GhidraBackend, GhidraUnavailableError, find_ghidra_install
 
 
 def _default_database() -> Path:
-    data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    data_root = os.environ.get("XDG_DATA_HOME")
+    if data_root is None and os.name == "nt":
+        data_root = os.environ.get("APPDATA")
+    data_home = Path(data_root or Path.home() / ".local" / "share")
     return data_home / "bedrock-lens" / "lens.db"
+
+
+def _default_cache() -> Path:
+    cache_root = os.environ.get("XDG_CACHE_HOME")
+    if cache_root is None and os.name == "nt":
+        cache_root = os.environ.get("LOCALAPPDATA")
+    cache_home = Path(cache_root or Path.home() / ".cache")
+    return cache_home / "bedrock-lens"
+
+
+def _default_manifest() -> Path:
+    return Path(__file__).with_name("corpus.toml")
 
 
 def _integer(value: str) -> int:
@@ -42,6 +58,21 @@ def _parser() -> argparse.ArgumentParser:
     add.add_argument("--version", required=True)
     add.add_argument("--kind", choices=("client", "server"), required=True)
     add.add_argument("--channel", default="retail")
+
+    fetch = commands.add_parser(
+        "fetch", help="download, verify, extract, and register a corpus artifact"
+    )
+    fetch.add_argument("artifact_id")
+    fetch.add_argument("--manifest", type=Path, default=_default_manifest())
+    fetch.add_argument("--cache-dir", type=Path, default=_default_cache())
+
+    corpus = commands.add_parser("corpus", help="inspect or synchronize a corpus manifest")
+    corpus_commands = corpus.add_subparsers(dest="corpus_command", required=True)
+    corpus_list = corpus_commands.add_parser("list", help="list available immutable artifacts")
+    corpus_list.add_argument("--manifest", type=Path, default=_default_manifest())
+    corpus_sync = corpus_commands.add_parser("sync", help="fetch and register every artifact")
+    corpus_sync.add_argument("--manifest", type=Path, default=_default_manifest())
+    corpus_sync.add_argument("--cache-dir", type=Path, default=_default_cache())
 
     commands.add_parser("list", help="list registered binaries")
 
@@ -113,6 +144,29 @@ def _search_hit_json(hit: SearchHit) -> dict[str, Any]:
     }
 
 
+def _fetch_and_register(
+    catalog: Catalog, fetcher: CorpusFetcher, spec: ArtifactSpec
+) -> tuple[Artifact, FetchResult]:
+    fetched = fetcher.fetch(spec)
+    artifact = catalog.register(
+        fetched.binary_path,
+        version=spec.version,
+        kind=spec.kind,
+        channel=spec.channel,
+    )
+    return artifact, fetched
+
+
+def _fetched_json(artifact: Artifact, fetched: FetchResult) -> dict[str, Any]:
+    result = _artifact_json(artifact)
+    result["acquisition"] = {
+        "manifest_id": fetched.spec.id,
+        "archive_path": str(fetched.archive_path),
+        "cache_hit": fetched.cache_hit,
+    }
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     with Catalog(arguments.database) as catalog:
@@ -125,6 +179,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                     channel=arguments.channel,
                 )
             )
+        elif arguments.command == "fetch":
+            manifest = load_manifest(arguments.manifest)
+            artifact, fetched = _fetch_and_register(
+                catalog,
+                CorpusFetcher(arguments.cache_dir),
+                manifest.artifact(arguments.artifact_id),
+            )
+            result = _fetched_json(artifact, fetched)
+        elif arguments.command == "corpus":
+            manifest = load_manifest(arguments.manifest)
+            if arguments.corpus_command == "list":
+                result = [
+                    {
+                        "id": spec.id,
+                        "version": spec.version,
+                        "kind": spec.kind,
+                        "channel": spec.channel,
+                        "source": spec.source.type,
+                        "binary_sha256": spec.binary_sha256,
+                    }
+                    for spec in manifest.artifacts
+                ]
+            else:
+                fetcher = CorpusFetcher(arguments.cache_dir)
+                result = []
+                for spec in manifest.artifacts:
+                    artifact, fetched = _fetch_and_register(catalog, fetcher, spec)
+                    result.append(_fetched_json(artifact, fetched))
         elif arguments.command == "list":
             result = [_artifact_json(artifact) for artifact in catalog.artifacts()]
         elif arguments.command == "search":

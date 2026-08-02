@@ -1,0 +1,38 @@
+# Lens downloads packages directly from their upstream delivery services. It does not
+# redistribute Minecraft binaries. Microsoft Store entries use update identities from
+# https://github.com/ddf8196/mc-w10-versiondb-auto-update and are pinned by SHA-256.
+schema = 1
+
+[[artifact]]
+id = "client-1.16.201.2-x64"
+version = "1.16.201.2"
+kind = "client"
+channel = "retail"
+archive_sha256 = "f5be7ad407139e5c3621cc6751b8c968ca8d9f157a10f383b680ab9c8e6f33df"
+binary_sha256 = "2712a04870fdf3ddd57b8199acabf1e823ffc470feb203306f15ad63fda2eb4c"
+member = "Minecraft.Windows.exe"
+machine = "amd64"
+pdb_guid = "85831307-0eda-43cc-ace7-f6eade6ddcee"
+pdb_age = 1
+
+[artifact.source]
+type = "store"
+update_id = "d252bd3c-7331-43cc-a67c-3e5519bdb792"
+revision = 1
+
+[[artifact]]
+id = "client-1.20.40.1-x64"
+version = "1.20.40.1"
+kind = "client"
+channel = "retail"
+archive_sha256 = "68df4e92824d19168211c635b409673b006274c6d54eeb2a8b89cb1c117b13b4"
+binary_sha256 = "6f91a4632bb97bc0d38f6c46eab31cca173c93456fac730e8352f63d829abc9f"
+member = "Minecraft.Windows.exe"
+machine = "amd64"
+pdb_guid = "603c336c-4fcb-4ec3-b5e2-ecb754278979"
+pdb_age = 1
+
+[artifact.source]
+type = "store"
+update_id = "cf4bd0ca-bcac-4b31-b09b-7973c61643d1"
+revision = 1

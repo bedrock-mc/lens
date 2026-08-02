@@ -25,7 +25,12 @@ class BSimIndex:
         self.install_dir = Path(install_dir).expanduser().resolve()
         self.database_path = Path(database_path).expanduser().resolve()
         self.template = template
-        self._executable = self.install_dir / "support/bsim"
+        support = self.install_dir / "support"
+        unix_executable = support / "bsim"
+        windows_executable = support / "bsim.bat"
+        self._executable = (
+            unix_executable if unix_executable.is_file() else windows_executable
+        )
         if not self._executable.is_file():
             raise BSimError(f"BSim executable not found: {self._executable}")
 
@@ -46,8 +51,11 @@ class BSimIndex:
         self._run("generatesigs", f"ghidra:{project}", "--bsim", self.url)
 
     def _run(self, *arguments: str) -> str:
+        command = (str(self._executable), *arguments)
+        if self._executable.suffix.lower() == ".bat":
+            command = ("cmd", "/c", *command)
         completed = subprocess.run(
-            (str(self._executable), *arguments),
+            command,
             check=False,
             capture_output=True,
             text=True,

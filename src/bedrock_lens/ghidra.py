@@ -29,13 +29,14 @@ def find_ghidra_install() -> Path | None:
         if _is_install(candidate):
             return candidate
 
-    executable = shutil.which("ghidraRun")
+    executable = shutil.which("ghidraRun") or shutil.which("ghidraRun.bat")
     candidates = [
         Path("/opt/homebrew/opt/ghidra/libexec"),
         Path("/usr/local/opt/ghidra/libexec"),
     ]
     if executable:
         resolved = Path(executable).resolve()
+        candidates.insert(0, resolved.parent)
         candidates.insert(0, resolved.parent.parent / "libexec")
     return next((path.resolve() for path in candidates if _is_install(path)), None)
 

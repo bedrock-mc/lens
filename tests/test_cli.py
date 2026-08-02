@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import zipfile
 from pathlib import Path
 
 from bedrock_lens.catalog import Catalog
@@ -66,3 +68,55 @@ def test_search_emits_versioned_function_hits(tmp_path: Path, capsys) -> None:
     assert hits[0]["version"] == "1.20.40.1"
     assert hits[0]["rva"] == "0x1870c60"
     assert hits[0]["name"] == "CrossbowItem::CrossbowItem"
+
+
+def test_fetch_registers_a_manifest_artifact(tmp_path: Path, capsys) -> None:
+    binary = tmp_path / "source" / "Minecraft.Windows.exe"
+    binary.parent.mkdir()
+    write_pe_with_rsds(binary)
+    package = tmp_path / "source" / "client.appx"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.write(binary, binary.name)
+
+    def sha256(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    manifest = tmp_path / "corpus.toml"
+    manifest.write_text(
+        f'''schema = 1
+[[artifact]]
+id = "client-test"
+version = "1.20.40.1"
+kind = "client"
+archive_sha256 = "{sha256(package)}"
+binary_sha256 = "{sha256(binary)}"
+member = "Minecraft.Windows.exe"
+[artifact.source]
+type = "url"
+url = "{package.as_uri()}"
+''',
+        encoding="utf-8",
+    )
+    database = tmp_path / "lens.db"
+
+    assert (
+        main(
+            [
+                "--database",
+                str(database),
+                "fetch",
+                "client-test",
+                "--manifest",
+                str(manifest),
+                "--cache-dir",
+                str(tmp_path / "cache"),
+            ]
+        )
+        == 0
+    )
+    fetched = json.loads(capsys.readouterr().out)
+
+    assert fetched["version"] == "1.20.40.1"
+    assert fetched["kind"] == "client"
+    assert fetched["sha256"] == sha256(binary)
+    assert Path(fetched["path"]).is_file()

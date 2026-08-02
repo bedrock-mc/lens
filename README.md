@@ -13,6 +13,8 @@ knowledge from symbol-rich BDS builds into stripped server and client builds usi
 - Decompiles a selected function on demand.
 - Builds a persistent Ghidra BSim index and finds structurally similar functions across binaries.
 - Records the Ghidra version and success/failure of every analysis run.
+- Fetches a pinned corpus from Microsoft delivery services, verifies archive and PE hashes, and
+  registers extracted artifacts automatically.
 
 ## Setup
 
@@ -25,6 +27,42 @@ uv run lens --help
 
 Lens uses Python 3.12. Ghidra 12 or newer must be installed. Lens discovers Homebrew Ghidra and
 `ghidraRun` automatically; otherwise set `GHIDRA_INSTALL_DIR` or pass `--ghidra-install`.
+
+## Reproducible corpus acquisition
+
+The packaged manifest contains the x64 Windows client packages for 1.16.201.2 and 1.20.40.1.
+It stores no Minecraft binaries: `lens` resolves the Microsoft Store update identity, downloads
+the package, verifies its SHA-256, extracts the exact executable, verifies its PE architecture and
+PDB identity, and then registers it in the catalog. The first download is large; subsequent runs
+reuse the content-addressed cache.
+
+```bash
+# See the immutable entries shipped with Lens.
+uv run lens corpus list
+
+# Fetch one version (recommended when starting out).
+uv run lens --database .lens/lens.db fetch client-1.20.40.1-x64
+
+# Fetch and register every entry in a custom or packaged manifest.
+uv run lens --database .lens/lens.db corpus sync
+
+# Put the cache somewhere shared by multiple catalogs or machines.
+uv run lens --database .lens/lens.db fetch client-1.16.201.2-x64 \
+  --cache-dir /path/to/bedrock-lens-cache
+```
+
+The default cache is `~/.cache/bedrock-lens` (or `$XDG_CACHE_HOME/bedrock-lens`). It contains
+`blobs/sha256/<archive hash>` and extracted `artifacts/sha256/<binary hash>/...`; it is safe to
+delete and rebuild. Store package resolution uses update identities maintained by
+[mc-w10-versiondb-auto-update](https://github.com/ddf8196/mc-w10-versiondb-auto-update). You must
+own the relevant Minecraft package and comply with Microsoft/Mojang terms; Lens does not bypass
+Store entitlement checks or redistribute packages.
+
+For BDS, use the same manifest format with a direct official URL, the expected archive SHA-256,
+and `member = "bedrock_server.exe"` (or `bedrock_server` for Linux). Historical BDS URLs are not
+published as a stable official index, so they should be pinned by the project that records them;
+Lens will reject a changed archive rather than silently accepting a replacement. The current
+official download page is [Minecraft Bedrock Server Download](https://www.minecraft.net/en-us/download/server/bedrock).
 
 ## End-to-end workflow
 
