@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -165,7 +166,7 @@ class IdaBackend:
             for option in ("-h", "-v"):
                 try:
                     completed = subprocess.run(
-                        [str(self._executable), option],
+                        self._command(option),
                         check=False,
                         capture_output=True,
                         text=True,
@@ -256,11 +257,10 @@ class IdaBackend:
                 config["rva"] = rva
             config_path.write_text(json.dumps(config), encoding="utf-8")
 
-            command = [
-                str(self._executable),
+            command = self._command(
                 "-A",
                 f"-S{worker} {config_path}",
-            ]
+            )
             if input_path == database_path and database_path.is_file():
                 command.append(str(database_path))
             else:
@@ -301,3 +301,19 @@ class IdaBackend:
             if "error" in payload:
                 raise IdaUnavailableError(str(payload["error"]))
             return payload
+
+    def _command(self, *arguments: str) -> list[str]:
+        command = [str(self._executable), *arguments]
+        if os.name != "nt":
+            return command
+        suffix = self._executable.suffix.lower()
+        if suffix in {".bat", ".cmd"}:
+            return ["cmd", "/c", *command]
+        if suffix not in {".com", ".exe"}:
+            try:
+                is_script = self._executable.read_bytes()[:2] == b"#!"
+            except OSError:
+                is_script = False
+            if is_script:
+                return [sys.executable, *command]
+        return command

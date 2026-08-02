@@ -14,6 +14,13 @@ def database_url(path: str | Path) -> str:
     return f"file:{Path(path).expanduser().resolve()}"
 
 
+def project_url(path: str | Path) -> str:
+    normalized = Path(path).expanduser().resolve().as_posix()
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    return f"ghidra:{normalized}"
+
+
 class BSimIndex:
     def __init__(
         self,
@@ -48,11 +55,11 @@ class BSimIndex:
         """Generate and commit signatures for every program in a Ghidra project."""
         self.create()
         project = Path(project_dir).expanduser().resolve() / project_name
-        self._run("generatesigs", f"ghidra:{project}", "--bsim", self.url)
+        self._run("generatesigs", project_url(project), "--bsim", self.url)
 
     def _run(self, *arguments: str) -> str:
         command = (str(self._executable), *arguments)
-        if self._executable.suffix.lower() == ".bat":
+        if self._executable.suffix.lower() in {".bat", ".cmd"}:
             command = ("cmd", "/c", *command)
         completed = subprocess.run(
             command,
