@@ -8,6 +8,7 @@ knowledge from symbol-rich BDS builds into stripped server and client builds usi
 - Registers PE artifacts by SHA-256, release, channel, and client/server role.
 - Extracts PE architecture, image base, timestamp, image size, and exact RSDS/PDB identity.
 - Runs persistent, SHA-keyed Ghidra analysis through native CPython with PyGhidra.
+- Runs persistent headless IDA Pro analysis and Hex-Rays decompilation when IDA is installed.
 - Indexes function names, namespaces, sizes, parameters, and referenced strings in SQLite.
 - Searches symbols and strings across every indexed version.
 - Decompiles a selected function on demand.
@@ -25,8 +26,11 @@ uv sync --extra analysis
 uv run lens --help
 ```
 
-Lens uses Python 3.12. Ghidra 12 or newer must be installed. Lens discovers Homebrew Ghidra and
-`ghidraRun` automatically; otherwise set `GHIDRA_INSTALL_DIR` or pass `--ghidra-install`.
+Lens uses Python 3.12. Ghidra 12 or newer must be installed for the default backend. Lens discovers
+Homebrew Ghidra and `ghidraRun` automatically; otherwise set `GHIDRA_INSTALL_DIR` or pass
+`--ghidra-install`. IDA support requires a licensed IDA Pro installation with the Hex-Rays
+decompiler; Lens discovers `idat`/`idat64` on `PATH`, otherwise set `IDA_INSTALL_DIR` or pass
+`--ida-install` (the conventional `IDADIR` environment variable is also accepted).
 
 ## Reproducible corpus acquisition
 
@@ -69,7 +73,8 @@ reproducible. Custom manifests can use `type = "bds_latest"` with `platform = "w
 
 ## End-to-end workflow
 
-Use one SQLite catalog, one Ghidra project directory, and one BSim database for the corpus:
+Use one SQLite catalog, one analysis project directory, and one BSim database for Ghidra corpus
+matching:
 
 ```bash
 uv run lens --database .lens/lens.db add /binaries/1.20.40/bedrock_server.exe \
@@ -87,8 +92,22 @@ uv run lens --database .lens/lens.db analyze 2 \
   --bsim-database .lens/bsim/lens
 ```
 
-Ghidra projects are keyed by executable SHA-256, so rerunning analysis reuses the saved program.
-BSim also safely skips binaries already present in its index.
+Select IDA for function/string evidence and Hex-Rays decompilation:
+
+```bash
+uv run lens --database .lens/lens.db analyze 1 \
+  --backend ida \
+  --ida-install /path/to/ida \
+  --project-dir .lens/ida-projects
+
+uv run lens --database .lens/lens.db decompile 1 0x1870c60 \
+  --backend ida \
+  --ida-install /path/to/ida \
+  --project-dir .lens/ida-projects
+```
+
+Ghidra and IDA databases are keyed by executable SHA-256, so rerunning analysis reuses the saved
+program. BSim is a Ghidra feature and remains unavailable for `--backend ida`.
 
 Search the symbol-rich BDS artifact:
 
@@ -118,7 +137,7 @@ All command output is JSON so results can be inspected manually or fed into late
 ## Evidence model
 
 An address alone is never treated as portable evidence. Lens associates every result with the
-artifact SHA-256, PE image base, version, role, Ghidra version, and analysis run. BSim results retain
-both similarity and significance so a candidate can be ranked without presenting it as a verified
-semantic match. Final claims should additionally be confirmed through constants, call sites,
-referenced strings, or decompiled control flow.
+artifact SHA-256, PE image base, version, role, analysis-backend version, and analysis run. BSim
+results retain both similarity and significance so a candidate can be ranked without presenting it
+as a verified semantic match. Final claims should additionally be confirmed through constants, call
+sites, referenced strings, or decompiled control flow.

@@ -56,6 +56,10 @@ class GhidraAnalysis:
     program_name: str
     functions: tuple[FunctionEvidence, ...]
 
+    @property
+    def backend_version(self) -> str:
+        return self.ghidra_version
+
 
 @dataclass(frozen=True, slots=True)
 class Decompilation:
