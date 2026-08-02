@@ -24,7 +24,7 @@ def test_bsim_uses_the_platform_launcher(tmp_path: Path, monkeypatch) -> None:
     assert index._run("createdatabase", index.url, "medium_nosize") == "ok\n"
     command = calls[0][0]
     if os.name == "nt":
-        assert command[:4] == ("cmd.exe", "/d", "/c", str(executable))
+        assert command[:3] == ("cmd", "/c", str(executable))
     else:
         assert command[0] == str(executable)
 

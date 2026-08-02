@@ -150,3 +150,44 @@ def test_cli_analysis_flows_into_search(tmp_path: Path, capsys) -> None:
     assert matches[0]["artifact_id"] == artifact_id
     assert matches[0]["version"] == "ghidra-fixture"
     assert matches[0]["rva"] == main_hit["rva"]
+
+
+def test_windows_ghidra_commands_are_discovered(tmp_path: Path, monkeypatch) -> None:
+    install = tmp_path / "ghidra"
+    (install / "Ghidra").mkdir(parents=True)
+    (install / "Ghidra" / "application.properties").write_text(
+        "application.version=12.0\n", encoding="utf-8"
+    )
+    support = install / "support"
+    support.mkdir()
+    (support / "bsim.bat").write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", str(install))
+
+    assert find_ghidra_install() == install.resolve()
+    assert BSimIndex(install, tmp_path / "index")._executable.name == "bsim.bat"
+
+
+def test_windows_bsim_batch_file_is_invoked_through_cmd(tmp_path: Path, monkeypatch) -> None:
+    install = tmp_path / "ghidra"
+    (install / "Ghidra").mkdir(parents=True)
+    (install / "Ghidra" / "application.properties").write_text(
+        "application.version=12.0\n", encoding="utf-8"
+    )
+    support = install / "support"
+    support.mkdir()
+    (support / "bsim.bat").write_text("@echo off\n", encoding="utf-8")
+    index = BSimIndex(install, tmp_path / "index")
+    calls: list[tuple[str, ...]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return Completed()
+
+    monkeypatch.setattr("bedrock_lens.bsim.subprocess.run", fake_run)
+    assert index._run("createdatabase", "file:test") == "ok"
+    assert calls == [("cmd", "/c", str(support / "bsim.bat"), "createdatabase", "file:test")]

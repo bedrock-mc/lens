@@ -11,13 +11,30 @@ from typing import Any
 
 from .bsim import BSimIndex
 from .catalog import Artifact, Catalog
+from .corpus import ArtifactSpec, CorpusFetcher, FetchResult, load_manifest
 from .evidence import SearchHit
 from .ghidra import GhidraBackend, GhidraUnavailableError, find_ghidra_install
+from .ida import IdaBackend, IdaUnavailableError, find_ida_install
 
 
 def _default_database() -> Path:
-    data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    data_root = os.environ.get("XDG_DATA_HOME")
+    if data_root is None and os.name == "nt":
+        data_root = os.environ.get("APPDATA")
+    data_home = Path(data_root or Path.home() / ".local" / "share")
     return data_home / "bedrock-lens" / "lens.db"
+
+
+def _default_cache() -> Path:
+    cache_root = os.environ.get("XDG_CACHE_HOME")
+    if cache_root is None and os.name == "nt":
+        cache_root = os.environ.get("LOCALAPPDATA")
+    cache_home = Path(cache_root or Path.home() / ".cache")
+    return cache_home / "bedrock-lens"
+
+
+def _default_manifest() -> Path:
+    return Path(__file__).with_name("corpus.toml")
 
 
 def _integer(value: str) -> int:
@@ -43,15 +60,32 @@ def _parser() -> argparse.ArgumentParser:
     add.add_argument("--kind", choices=("client", "server"), required=True)
     add.add_argument("--channel", default="retail")
 
+    fetch = commands.add_parser(
+        "fetch", help="download, verify, extract, and register a corpus artifact"
+    )
+    fetch.add_argument("artifact_id")
+    fetch.add_argument("--manifest", type=Path, default=_default_manifest())
+    fetch.add_argument("--cache-dir", type=Path, default=_default_cache())
+
+    corpus = commands.add_parser("corpus", help="inspect or synchronize a corpus manifest")
+    corpus_commands = corpus.add_subparsers(dest="corpus_command", required=True)
+    corpus_list = corpus_commands.add_parser("list", help="list available immutable artifacts")
+    corpus_list.add_argument("--manifest", type=Path, default=_default_manifest())
+    corpus_sync = corpus_commands.add_parser("sync", help="fetch and register every artifact")
+    corpus_sync.add_argument("--manifest", type=Path, default=_default_manifest())
+    corpus_sync.add_argument("--cache-dir", type=Path, default=_default_cache())
+
     commands.add_parser("list", help="list registered binaries")
 
     search = commands.add_parser("search", help="search function names and referenced strings")
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=50)
 
-    analyze = commands.add_parser("analyze", help="analyze a registered binary with Ghidra")
+    analyze = commands.add_parser("analyze", help="analyze a registered binary")
     analyze.add_argument("artifact_id", type=int)
+    analyze.add_argument("--backend", choices=("ghidra", "ida"), default="ghidra")
     analyze.add_argument("--ghidra-install", type=Path)
+    analyze.add_argument("--ida-install", type=Path)
     analyze.add_argument("--project-dir", type=Path)
     analyze.add_argument("--timeout", type=int)
     analyze.add_argument("--bsim-database", type=Path)
@@ -59,7 +93,9 @@ def _parser() -> argparse.ArgumentParser:
     decompile = commands.add_parser("decompile", help="decompile a function by RVA")
     decompile.add_argument("artifact_id", type=int)
     decompile.add_argument("rva", type=_integer)
+    decompile.add_argument("--backend", choices=("ghidra", "ida"), default="ghidra")
     decompile.add_argument("--ghidra-install", type=Path)
+    decompile.add_argument("--ida-install", type=Path)
     decompile.add_argument("--project-dir", type=Path)
     decompile.add_argument("--timeout", type=int, default=120)
 
@@ -113,6 +149,51 @@ def _search_hit_json(hit: SearchHit) -> dict[str, Any]:
     }
 
 
+def _fetch_and_register(
+    catalog: Catalog, fetcher: CorpusFetcher, spec: ArtifactSpec
+) -> tuple[Artifact, FetchResult]:
+    fetched = fetcher.fetch(spec)
+    artifact = catalog.register(
+        fetched.binary_path,
+        version=spec.version,
+        kind=spec.kind,
+        channel=spec.channel,
+    )
+    return artifact, fetched
+
+
+def _fetched_json(artifact: Artifact, fetched: FetchResult) -> dict[str, Any]:
+    result = _artifact_json(artifact)
+    result["acquisition"] = {
+        "manifest_id": fetched.spec.id,
+        "archive_path": str(fetched.archive_path),
+        "cache_hit": fetched.cache_hit,
+    }
+    return result
+
+
+def _analysis_backend(arguments: argparse.Namespace, project_dir: Path):
+    if arguments.backend == "ida":
+        install = arguments.ida_install or find_ida_install()
+        if install is None:
+            raise IdaUnavailableError(
+                "IDA Pro was not found; set IDA_INSTALL_DIR or pass --ida-install"
+            )
+        return IdaBackend(install, project_dir)
+    install = arguments.ghidra_install or find_ghidra_install()
+    if install is None:
+        raise GhidraUnavailableError(
+            "Ghidra was not found; set GHIDRA_INSTALL_DIR or pass --ghidra-install"
+        )
+    return GhidraBackend(install, project_dir)
+
+
+def _analysis_project_dir(arguments: argparse.Namespace) -> Path:
+    if arguments.project_dir is not None:
+        return arguments.project_dir
+    return arguments.database.parent / f"{arguments.backend}-projects"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     with Catalog(arguments.database) as catalog:
@@ -125,6 +206,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                     channel=arguments.channel,
                 )
             )
+        elif arguments.command == "fetch":
+            manifest = load_manifest(arguments.manifest)
+            artifact, fetched = _fetch_and_register(
+                catalog,
+                CorpusFetcher(arguments.cache_dir),
+                manifest.artifact(arguments.artifact_id),
+            )
+            result = _fetched_json(artifact, fetched)
+        elif arguments.command == "corpus":
+            manifest = load_manifest(arguments.manifest)
+            if arguments.corpus_command == "list":
+                result = [
+                    {
+                        "id": spec.id,
+                        "version": spec.version,
+                        "kind": spec.kind,
+                        "channel": spec.channel,
+                        "source": spec.source.type,
+                        "binary_sha256": spec.binary_sha256,
+                    }
+                    for spec in manifest.artifacts
+                ]
+            else:
+                fetcher = CorpusFetcher(arguments.cache_dir)
+                result = []
+                for spec in manifest.artifacts:
+                    artifact, fetched = _fetch_and_register(catalog, fetcher, spec)
+                    result.append(_fetched_json(artifact, fetched))
         elif arguments.command == "list":
             result = [_artifact_json(artifact) for artifact in catalog.artifacts()]
         elif arguments.command == "search":
@@ -133,22 +242,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for hit in catalog.search(arguments.query, limit=arguments.limit)
             ]
         elif arguments.command == "analyze":
-            install = arguments.ghidra_install or find_ghidra_install()
-            if install is None:
-                raise GhidraUnavailableError(
-                    "Ghidra was not found; set GHIDRA_INSTALL_DIR or pass --ghidra-install"
-                )
             artifact = catalog.artifact(arguments.artifact_id)
-            project_dir = arguments.project_dir or arguments.database.parent / "ghidra-projects"
-            backend = GhidraBackend(install, project_dir)
+            project_dir = _analysis_project_dir(arguments)
+            if arguments.backend == "ida" and arguments.bsim_database is not None:
+                raise ValueError("BSim indexing is only supported by the Ghidra backend")
+            backend = _analysis_backend(arguments, project_dir)
             run_id = catalog.start_analysis(
-                artifact.id, backend="ghidra", backend_version=backend.version
+                artifact.id, backend=arguments.backend, backend_version=backend.version
             )
             try:
                 analysis = backend.analyze(artifact.path, timeout=arguments.timeout)
                 catalog.replace_function_evidence(artifact.id, list(analysis.functions))
-                if arguments.bsim_database is not None:
-                    BSimIndex(install, arguments.bsim_database).index_project(
+                if arguments.backend == "ghidra" and arguments.bsim_database is not None:
+                    BSimIndex(backend.install_dir, arguments.bsim_database).index_project(
                         project_dir, analysis.project_name
                     )
             except Exception as exc:
@@ -157,7 +263,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             catalog.complete_analysis(run_id, function_count=len(analysis.functions))
             result = {
                 "artifact_id": artifact.id,
-                "ghidra_version": analysis.ghidra_version,
+                "backend": arguments.backend,
                 "function_count": len(analysis.functions),
                 "bsim_database": (
                     str(arguments.bsim_database.resolve())
@@ -165,15 +271,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else None
                 ),
             }
+            result[f"{arguments.backend}_version"] = analysis.backend_version
         elif arguments.command == "decompile":
-            install = arguments.ghidra_install or find_ghidra_install()
-            if install is None:
-                raise GhidraUnavailableError(
-                    "Ghidra was not found; set GHIDRA_INSTALL_DIR or pass --ghidra-install"
-                )
             artifact = catalog.artifact(arguments.artifact_id)
-            project_dir = arguments.project_dir or arguments.database.parent / "ghidra-projects"
-            decompilation = GhidraBackend(install, project_dir).decompile(
+            project_dir = _analysis_project_dir(arguments)
+            decompilation = _analysis_backend(arguments, project_dir).decompile(
                 artifact.path, arguments.rva, timeout=arguments.timeout
             )
             result = {

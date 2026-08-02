@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Lunar" }]
-dependencies = []
+dependencies = [
+    "certifi>=2025.8.3",
+]
 
 [project.optional-dependencies]
 analysis = [
