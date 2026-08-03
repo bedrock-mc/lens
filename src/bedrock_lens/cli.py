@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from collections.abc import Sequence
@@ -301,6 +302,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 significance=arguments.min_significance,
             )
             indexed_artifacts = catalog.artifacts()
+            md5_cache: dict[Path, str] = {}
+
+            def artifact_md5(candidate: Artifact) -> str:
+                if candidate.path not in md5_cache:
+                    md5_cache[candidate.path] = _md5(candidate.path)
+                return md5_cache[candidate.path]
+
             result = []
             for match in matches:
                 target = next(
@@ -308,11 +316,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                         candidate
                         for candidate in indexed_artifacts
                         if match.executable.endswith(f"_{candidate.identity.sha256[:12]}")
+                        or match.md5.lower() == artifact_md5(candidate)
                     ),
                     None,
                 )
                 item = {
                     "executable": match.executable,
+                    "md5": match.md5,
                     "function": match.function,
                     "address": f"0x{match.address:x}",
                     "similarity": match.similarity,
@@ -330,3 +340,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result.append(item)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
+
+
+def _md5(path: Path) -> str:
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "md5").hexdigest()

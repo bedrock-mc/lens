@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import hashlib
 import os
 import shutil
-from collections import defaultdict
+import signal
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,6 +75,7 @@ class Decompilation:
 @dataclass(frozen=True, slots=True)
 class BSimMatch:
     executable: str
+    md5: str
     function: str
     address: int
     similarity: float
@@ -90,39 +95,17 @@ class GhidraBackend:
 
     def analyze(self, binary: str | Path, *, timeout: int | None = None) -> GhidraAnalysis:
         """Import, analyze, persist, and extract function evidence from one binary."""
-        try:
-            import pyghidra
-        except ImportError as exc:
-            raise GhidraUnavailableError(
-                "PyGhidra is not installed; run `uv sync --extra analysis`"
-            ) from exc
-
         binary_path = Path(binary).expanduser().resolve(strict=True)
         project_name, program_name = _project_coordinates(binary_path)
         self.project_dir.mkdir(parents=True, exist_ok=True)
-
-        if not pyghidra.started():
-            pyghidra.start(install_dir=self.install_dir)
-        with pyghidra.open_project(self.project_dir, project_name, create=True) as project:
-            project_path = f"/{program_name}"
-            if project.getProjectData().getFile(project_path) is None:
-                loader = (
-                    pyghidra.program_loader()
-                    .project(project)
-                    .source(str(binary_path))
-                    .name(program_name)
-                )
-                with loader.load() as load_results:
-                    load_results.save(pyghidra.task_monitor())
-
-            with pyghidra.program_context(project, project_path) as program:
-                from ghidra.program.util import GhidraProgramUtilities
-
-                monitor = pyghidra.task_monitor(timeout)
-                if GhidraProgramUtilities.shouldAskToAnalyze(program):
-                    _analyze_program(pyghidra, program, monitor, timeout)
-                    program.save("Bedrock Lens analysis", monitor)
-                functions = _extract_functions(program, monitor=monitor, timeout=timeout)
+        functions = _analyze_headless(
+            self.install_dir,
+            self.project_dir,
+            project_name,
+            program_name,
+            binary_path,
+            timeout=timeout,
+        )
 
         return GhidraAnalysis(
             ghidra_version=self.version,
@@ -242,6 +225,7 @@ class GhidraBackend:
                             matches.append(
                                 BSimMatch(
                                     executable=str(executable.getNameExec()),
+                                    md5=str(executable.getMd5()),
                                     function=str(description.getFunctionName()),
                                     address=int(description.getAddress()),
                                     similarity=float(note.getSimilarity()),
@@ -262,125 +246,176 @@ def _sha256(path: Path) -> str:
 
 def _project_coordinates(path: Path) -> tuple[str, str]:
     digest = _sha256(path)
-    return f"artifact_{digest[:16]}", f"{path.stem}_{digest[:12]}"
+    return f"artifact_{digest[:16]}_v5", path.name
 
 
-def _analyze_program(pyghidra, program, monitor, timeout: int | None) -> None:
-    from ghidra.app.plugin.core.analysis import AutoAnalysisManager
-    from ghidra.app.script import GhidraScriptUtil
-    from ghidra.program.util import GhidraProgramUtilities
-
-    with pyghidra.transaction(program, "Bedrock Lens analysis"):
-        GhidraScriptUtil.acquireBundleHostReference()
-        try:
-            manager = AutoAnalysisManager.getAnalysisManager(program)
-            manager.initializeOptions()
-            manager.reAnalyzeAll(None)
-            manager.startAnalysis(monitor, True)
-            if monitor.isCancelled():
-                raise TimeoutError(f"Ghidra analysis exceeded {timeout} seconds")
-            GhidraProgramUtilities.markProgramAnalyzed(program)
-        finally:
-            GhidraScriptUtil.releaseBundleHostReference()
+def _headless_executable(install_dir: Path) -> Path:
+    support = install_dir / "support"
+    candidates = (
+        (support / "analyzeHeadless.bat", support / "analyzeHeadless")
+        if os.name == "nt"
+        else (support / "analyzeHeadless", support / "analyzeHeadless.bat")
+    )
+    executable = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if executable is None:
+        raise GhidraUnavailableError(f"analyzeHeadless was not found under {support}")
+    return executable
 
 
-def _extract_functions(
-    program, *, monitor=None, timeout: int | None = None
+def _analyze_headless(
+    install_dir: Path,
+    project_dir: Path,
+    project_name: str,
+    program_name: str,
+    binary_path: Path,
+    *,
+    timeout: int | None,
 ) -> tuple[FunctionEvidence, ...]:
-    """Extract function and referenced-string evidence with bounded JNI passes.
-
-    String references are collected by building one address map and walking the
-    program's reference index once.  Looking up references separately for every
-    string creates a large amount of Java/Python bridge overhead on large binaries.
-    """
-    image_base = program.getImageBase()
-    function_manager = program.getFunctionManager()
-    reference_manager = program.getReferenceManager()
-    strings: dict[int, set[StringEvidence]] = defaultdict(set)
-    strings_by_address: dict[int, StringEvidence] = {}
-
-    _raise_if_cancelled(monitor, timeout, "string discovery")
-
-    defined_data = program.getListing().getDefinedData(True)
-    data_count = 0
-    while defined_data.hasNext():
-        data_count += 1
-        if data_count & 0xFFF == 0:
-            _raise_if_cancelled(monitor, timeout, "string discovery")
-        data = defined_data.next()
-        if not data.hasStringValue():
-            continue
-        value = data.getValue()
-        if value is None:
-            continue
-        try:
-            address = int(data.getAddress().subtract(image_base))
-        except Exception:
-            continue
-        strings_by_address[address] = StringEvidence(address=address, value=str(value))
-
-    references = reference_manager.getReferenceIterator(image_base)
-    function_entries: dict[int, int | None] = {}
-    reference_count = 0
-    while references.hasNext():
-        reference_count += 1
-        if reference_count & 0xFFF == 0:
-            _raise_if_cancelled(monitor, timeout, "string references")
-        reference = references.next()
-        try:
-            target_rva = int(reference.getToAddress().subtract(image_base))
-            source_rva = int(reference.getFromAddress().subtract(image_base))
-        except Exception:
-            continue
-        string = strings_by_address.get(target_rva)
-        if string is None:
-            continue
-
-        if source_rva not in function_entries:
-            function = function_manager.getFunctionContaining(reference.getFromAddress())
-            if function is None or function.isExternal():
-                function_entries[source_rva] = None
+    """Analyze and extract evidence in Ghidra's standalone headless JVM."""
+    if timeout is not None and timeout <= 0:
+        raise TimeoutError(f"Ghidra analysis exceeded {timeout} seconds")
+    executable = _headless_executable(install_dir)
+    script_dir = Path(__file__).with_name("ghidra_scripts").resolve(strict=True)
+    with tempfile.TemporaryDirectory(prefix="lens-extract-", dir=project_dir) as temporary:
+        output_path = Path(temporary) / "evidence.tsv"
+        completion_marker = project_dir / f"{project_name}.lens-complete"
+        command: tuple[str, ...] = (
+            str(executable),
+            str(project_dir),
+            project_name,
+            "-scriptPath",
+            str(script_dir),
+        )
+        project_file = project_dir / f"{project_name}.gpr"
+        if project_file.is_file() and completion_marker.is_file():
+            command += ("-process", program_name, "-noanalysis", "-readOnly")
+        else:
+            command += (
+                "-preScript",
+                "BedrockLensConfigure.java",
+            )
+            if project_file.is_file():
+                command += ("-process", program_name)
             else:
-                function_entries[source_rva] = int(
-                    function.getEntryPoint().subtract(image_base)
-                )
-        entry = function_entries[source_rva]
-        if entry is not None:
-            strings[entry].add(string)
-
-    evidence: list[FunctionEvidence] = []
-    functions = function_manager.getFunctions(True)
-    function_count = 0
-    while functions.hasNext():
-        function_count += 1
-        if function_count & 0xFFF == 0:
-            _raise_if_cancelled(monitor, timeout, "function extraction")
-        function = functions.next()
-        if function.isExternal():
-            continue
+                command += ("-import", str(binary_path))
+            if timeout is not None:
+                command += ("-analysisTimeoutPerFile", str(timeout))
+        command += (
+            "-postScript",
+            "BedrockLensExtract.java",
+            str(output_path),
+        )
+        if executable.suffix.lower() in {".bat", ".cmd"}:
+            command = ("cmd", "/c", *command)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            start_new_session=os.name != "nt",
+        )
         try:
-            rva = int(function.getEntryPoint().subtract(image_base))
-        except Exception:
-            continue
-        namespace = function.getParentNamespace()
+            stdout, stderr = process.communicate(
+                timeout=7200 if timeout is None else timeout + 180
+            )
+        except subprocess.TimeoutExpired as exc:
+            _terminate_process_tree(process)
+            process.communicate()
+            raise TimeoutError(f"Ghidra evidence extraction exceeded {timeout} seconds") from exc
+        if process.returncode != 0:
+            detail = f"{stdout}\n{stderr}".strip()[-4000:]
+            raise RuntimeError(
+                f"Ghidra evidence extraction failed with exit code "
+                f"{process.returncode}: {detail}"
+            )
+        if not output_path.is_file():
+            detail = f"{stdout}\n{stderr}".strip()[-4000:]
+            raise RuntimeError(f"Ghidra evidence extraction produced no output: {detail}")
+        evidence = _parse_headless_evidence(output_path)
+        completion_marker.touch()
+        return evidence
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if os.name == "nt":
+        with contextlib.suppress(OSError):
+            subprocess.run(
+                ("taskkill", "/PID", str(process.pid), "/T", "/F"),
+                check=False,
+                capture_output=True,
+                text=True,
+                errors="replace",
+            )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+    if process.poll() is None:
+        process.kill()
+
+
+def _parse_headless_evidence(path: Path) -> tuple[FunctionEvidence, ...]:
+    evidence: list[FunctionEvidence] = []
+    current: tuple[int, str, str, int, int] | None = None
+    strings: list[StringEvidence] = []
+
+    def flush() -> None:
+        nonlocal current, strings
+        if current is None:
+            return
+        rva, name, namespace, size, parameter_count = current
         evidence.append(
             FunctionEvidence(
                 rva=rva,
-                name=str(function.getName()),
-                namespace=str(namespace.getName(True)) if namespace is not None else "",
-                size=int(function.getBody().getNumAddresses()),
-                parameter_count=int(function.getParameterCount()),
-                strings=tuple(
-                    sorted(strings.get(rva, ()), key=lambda item: (item.address, item.value))
-                ),
+                name=name,
+                namespace=namespace,
+                size=size,
+                parameter_count=parameter_count,
+                strings=tuple(strings),
             )
         )
+        current = None
+        strings = []
+
+    with path.open(encoding="utf-8", newline="") as source:
+        header = source.readline().rstrip("\r\n")
+        if header != "V\t1":
+            raise RuntimeError(f"unsupported Ghidra evidence format: {header!r}")
+        for line_number, raw_line in enumerate(source, start=2):
+            fields = raw_line.rstrip("\r\n").split("\t")
+            try:
+                if fields[0] == "F" and len(fields) == 6:
+                    flush()
+                    current = (
+                        int(fields[1]),
+                        _decode_evidence_text(fields[4]),
+                        _decode_evidence_text(fields[5]),
+                        int(fields[2]),
+                        int(fields[3]),
+                    )
+                elif fields[0] == "S" and len(fields) == 4 and current is not None:
+                    if int(fields[1]) != current[0]:
+                        raise ValueError("string function RVA does not match current function")
+                    strings.append(
+                        StringEvidence(
+                            address=int(fields[2]),
+                            value=_decode_evidence_text(fields[3]),
+                        )
+                    )
+                else:
+                    raise ValueError("unknown or misplaced record")
+            except (ValueError, IndexError) as exc:
+                raise RuntimeError(
+                    f"malformed Ghidra evidence at {path}:{line_number}"
+                ) from exc
+    flush()
     return tuple(evidence)
 
 
-def _raise_if_cancelled(monitor, timeout: int | None, phase: str) -> None:
-    if monitor is None or not monitor.isCancelled():
-        return
-    if timeout is None:
-        raise TimeoutError(f"Ghidra {phase} was cancelled")
-    raise TimeoutError(f"Ghidra {phase} exceeded {timeout} seconds")
+def _decode_evidence_text(value: str) -> str:
+    try:
+        return base64.b64decode(value, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("invalid base64 text") from exc

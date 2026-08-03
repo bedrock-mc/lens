@@ -6,7 +6,30 @@ import pytest
 from bedrock_lens.bsim import BSimIndex
 from bedrock_lens.catalog import Catalog
 from bedrock_lens.cli import main
-from bedrock_lens.ghidra import GhidraBackend, find_ghidra_install
+from bedrock_lens.ghidra import GhidraBackend, _parse_headless_evidence, find_ghidra_install
+
+
+def test_headless_evidence_parser_preserves_functions_and_strings(tmp_path: Path) -> None:
+    evidence = tmp_path / "evidence.tsv"
+    evidence.write_text(
+        "V\t1\n"
+        "F\t4096\t32\t2\tdGljaw==\tZ2xvYmFs\n"
+        "S\t4096\t8192\taGVsbG8=\n"
+        "F\t4352\t8\t0\tdG9jaw==\t\n",
+        encoding="utf-8",
+    )
+
+    functions = _parse_headless_evidence(evidence)
+
+    assert [(function.rva, function.name) for function in functions] == [
+        (4096, "tick"),
+        (4352, "tock"),
+    ]
+    assert functions[0].namespace == "global"
+    assert functions[0].parameter_count == 2
+    assert [(string.address, string.value) for string in functions[0].strings] == [
+        (8192, "hello")
+    ]
 
 
 @pytest.mark.integration
