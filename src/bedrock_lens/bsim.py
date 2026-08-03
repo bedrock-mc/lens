@@ -16,7 +16,9 @@ _GC_OPTIONS = (
 )
 
 
-def ghidra_environment(component_options: str) -> dict[str, str]:
+def ghidra_environment(
+    component_options: str, *, default_gc: str = "-XX:+UseParallelGC"
+) -> dict[str, str]:
     """Return a stable environment for a standalone Ghidra JVM."""
     environment = os.environ.copy()
     if os.name == "nt":
@@ -28,7 +30,7 @@ def ghidra_environment(component_options: str) -> dict[str, str]:
         )
         if not any(option in configured for option in _GC_OPTIONS):
             existing = environment.get(component_options, "")
-            environment[component_options] = f"{existing} -XX:+UseParallelGC".strip()
+            environment[component_options] = f"{existing} {default_gc}".strip()
     return environment
 
 
@@ -96,7 +98,9 @@ class BSimIndex:
             command,
             check=False,
             capture_output=True,
-            env=ghidra_environment("GHIDRA_BSIM_JAVA_OPTIONS"),
+            env=ghidra_environment(
+                "GHIDRA_BSIM_JAVA_OPTIONS", default_gc="-XX:+UseSerialGC"
+            ),
             text=True,
             timeout=3600,
         )

@@ -54,3 +54,25 @@ def test_explicit_ghidra_garbage_collector_is_preserved(monkeypatch) -> None:
     environment = ghidra_environment("GHIDRA_BSIM_JAVA_OPTIONS")
 
     assert environment["GHIDRA_BSIM_JAVA_OPTIONS"] == "-Xmx4G"
+
+
+def test_bsim_uses_single_threaded_gc_on_windows(tmp_path: Path, monkeypatch) -> None:
+    install = tmp_path / "ghidra"
+    support = install / "support"
+    support.mkdir(parents=True)
+    executable = support / "bsim.bat"
+    executable.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr("bedrock_lens.bsim.os.name", "nt")
+    monkeypatch.delenv("GHIDRA_JAVA_OPTIONS", raising=False)
+    monkeypatch.delenv("GHIDRA_BSIM_JAVA_OPTIONS", raising=False)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("bedrock_lens.bsim.subprocess.run", fake_run)
+
+    BSimIndex(install, tmp_path / "index")._run("createdatabase", "file:test")
+
+    assert calls[0]["env"]["GHIDRA_BSIM_JAVA_OPTIONS"] == "-XX:+UseSerialGC"
