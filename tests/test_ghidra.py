@@ -6,7 +6,29 @@ import pytest
 from bedrock_lens.bsim import BSimIndex
 from bedrock_lens.catalog import Catalog
 from bedrock_lens.cli import main
-from bedrock_lens.ghidra import GhidraBackend, _parse_headless_evidence, find_ghidra_install
+from bedrock_lens.ghidra import (
+    GhidraBackend,
+    _discard_incomplete_project,
+    _parse_headless_evidence,
+    find_ghidra_install,
+)
+
+
+def test_incomplete_headless_project_is_discarded_before_retry(tmp_path: Path) -> None:
+    project = tmp_path / "artifact_deadbeef.gpr"
+    project.write_text("", encoding="utf-8")
+    project.with_suffix(".lock").write_text("locked", encoding="utf-8")
+    project.with_suffix(".lock~").write_text("", encoding="utf-8")
+    repository = project.with_suffix(".rep")
+    repository.mkdir()
+    (repository / "partial").write_text("incomplete", encoding="utf-8")
+
+    _discard_incomplete_project(project)
+
+    assert not project.exists()
+    assert not project.with_suffix(".lock").exists()
+    assert not project.with_suffix(".lock~").exists()
+    assert not repository.exists()
 
 
 def test_headless_evidence_parser_preserves_functions_and_strings(tmp_path: Path) -> None:

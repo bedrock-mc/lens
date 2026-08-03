@@ -287,6 +287,8 @@ def _analyze_headless(
             str(script_dir),
         )
         project_file = project_dir / f"{project_name}.gpr"
+        if not completion_marker.is_file():
+            _discard_incomplete_project(project_file)
         if project_file.is_file() and completion_marker.is_file():
             command += ("-process", program_name, "-noanalysis", "-readOnly")
         else:
@@ -335,6 +337,13 @@ def _analyze_headless(
         evidence = _parse_headless_evidence(output_path)
         completion_marker.touch()
         return evidence
+
+
+def _discard_incomplete_project(project_file: Path) -> None:
+    shutil.rmtree(project_file.with_suffix(".rep"), ignore_errors=True)
+    project_file.unlink(missing_ok=True)
+    project_file.with_suffix(".lock").unlink(missing_ok=True)
+    project_file.with_suffix(".lock~").unlink(missing_ok=True)
 
 
 def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
