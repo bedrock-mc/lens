@@ -6,6 +6,31 @@ import os
 import subprocess
 from pathlib import Path
 
+_GC_OPTIONS = (
+    "-XX:+UseSerialGC",
+    "-XX:+UseParallelGC",
+    "-XX:+UseG1GC",
+    "-XX:+UseZGC",
+    "-XX:+UseShenandoahGC",
+    "-XX:+UseEpsilonGC",
+)
+
+
+def ghidra_environment(component_options: str) -> dict[str, str]:
+    """Return a stable environment for a standalone Ghidra JVM."""
+    environment = os.environ.copy()
+    if os.name == "nt":
+        configured = " ".join(
+            (
+                environment.get("GHIDRA_JAVA_OPTIONS", ""),
+                environment.get(component_options, ""),
+            )
+        )
+        if not any(option in configured for option in _GC_OPTIONS):
+            existing = environment.get(component_options, "")
+            environment[component_options] = f"{existing} -XX:+UseParallelGC".strip()
+    return environment
+
 
 class BSimError(RuntimeError):
     """Raised when the Ghidra BSim command fails."""
@@ -71,6 +96,7 @@ class BSimIndex:
             command,
             check=False,
             capture_output=True,
+            env=ghidra_environment("GHIDRA_BSIM_JAVA_OPTIONS"),
             text=True,
             timeout=3600,
         )

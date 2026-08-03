@@ -2,7 +2,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from bedrock_lens.bsim import BSimIndex, project_url
+from bedrock_lens.bsim import BSimIndex, ghidra_environment, project_url
 
 
 def test_bsim_uses_the_platform_launcher(tmp_path: Path, monkeypatch) -> None:
@@ -34,3 +34,23 @@ def test_project_url_uses_ghidra_local_url_syntax(tmp_path: Path) -> None:
 
     assert url.startswith("ghidra:/")
     assert url.endswith("/project")
+
+
+def test_windows_ghidra_processes_default_to_parallel_gc(monkeypatch) -> None:
+    monkeypatch.delenv("GHIDRA_JAVA_OPTIONS", raising=False)
+    monkeypatch.delenv("GHIDRA_BSIM_JAVA_OPTIONS", raising=False)
+    monkeypatch.setattr("bedrock_lens.bsim.os.name", "nt")
+
+    environment = ghidra_environment("GHIDRA_BSIM_JAVA_OPTIONS")
+
+    assert environment["GHIDRA_BSIM_JAVA_OPTIONS"] == "-XX:+UseParallelGC"
+
+
+def test_explicit_ghidra_garbage_collector_is_preserved(monkeypatch) -> None:
+    monkeypatch.setenv("GHIDRA_JAVA_OPTIONS", "-XX:+UseSerialGC")
+    monkeypatch.setenv("GHIDRA_BSIM_JAVA_OPTIONS", "-Xmx4G")
+    monkeypatch.setattr("bedrock_lens.bsim.os.name", "nt")
+
+    environment = ghidra_environment("GHIDRA_BSIM_JAVA_OPTIONS")
+
+    assert environment["GHIDRA_BSIM_JAVA_OPTIONS"] == "-Xmx4G"

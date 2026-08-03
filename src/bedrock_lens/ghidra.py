@@ -13,7 +13,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .bsim import database_url
+from .bsim import database_url, ghidra_environment
 from .evidence import FunctionEvidence, StringEvidence
 
 
@@ -313,6 +313,7 @@ def _analyze_headless(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=ghidra_environment("GHIDRA_HEADLESS_JAVA_OPTIONS"),
             text=True,
             errors="replace",
             start_new_session=os.name != "nt",
