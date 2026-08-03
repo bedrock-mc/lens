@@ -84,12 +84,12 @@ uv run lens --database .lens/lens.db add /binaries/1.20.40/Minecraft.Windows.exe
   --version 1.20.40.1 --kind client
 
 uv run lens --database .lens/lens.db analyze 1 \
-  --project-dir .lens/ghidra-projects \
-  --bsim-database .lens/bsim/lens
+  --project-dir ghidra-projects \
+  --bsim-database bsim/lens
 
 uv run lens --database .lens/lens.db analyze 2 \
-  --project-dir .lens/ghidra-projects \
-  --bsim-database .lens/bsim/lens
+  --project-dir ghidra-projects \
+  --bsim-database bsim/lens
 ```
 
 Select IDA for function/string evidence and Hex-Rays decompilation:
@@ -119,8 +119,8 @@ Take an RVA from the result and ask BSim for corresponding functions across the 
 
 ```bash
 uv run lens --database .lens/lens.db match 1 0x1870c60 \
-  --project-dir .lens/ghidra-projects \
-  --bsim-database .lens/bsim/lens \
+  --project-dir ghidra-projects \
+  --bsim-database bsim/lens \
   --min-similarity 0.7
 ```
 
@@ -129,7 +129,7 @@ significance whenever the executable belongs to the Lens catalog. Decompile a ca
 
 ```bash
 uv run lens --database .lens/lens.db decompile 2 0x32a7840 \
-  --project-dir .lens/ghidra-projects
+  --project-dir ghidra-projects
 ```
 
 All command output is JSON so results can be inspected manually or fed into later automation.

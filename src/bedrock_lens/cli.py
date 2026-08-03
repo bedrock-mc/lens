@@ -192,7 +192,9 @@ def _analysis_backend(arguments: argparse.Namespace, project_dir: Path):
 def _analysis_project_dir(arguments: argparse.Namespace) -> Path:
     if arguments.project_dir is not None:
         return arguments.project_dir
-    return arguments.database.parent / f"{arguments.backend}-projects"
+    # Ghidra 12.1 rejects local project paths containing dot-prefixed path
+    # elements (for example, the conventional `.lens` catalog directory).
+    return Path.cwd() / f"{arguments.backend}-projects"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -292,7 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "Ghidra was not found; set GHIDRA_INSTALL_DIR or pass --ghidra-install"
                 )
             artifact = catalog.artifact(arguments.artifact_id)
-            project_dir = arguments.project_dir or arguments.database.parent / "ghidra-projects"
+            project_dir = _analysis_project_dir(arguments)
             matches = GhidraBackend(install, project_dir).match(
                 artifact.path,
                 arguments.rva,

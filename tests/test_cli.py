@@ -6,10 +6,21 @@ import zipfile
 from pathlib import Path
 
 from bedrock_lens.catalog import Catalog
-from bedrock_lens.cli import main
+from bedrock_lens.cli import _analysis_project_dir, _parser, main
 from bedrock_lens.evidence import FunctionEvidence
 
 from .test_pe import write_pe_with_rsds
+
+
+def test_default_analysis_project_avoids_hidden_catalog_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    arguments = _parser().parse_args(
+        ["--database", str(tmp_path / ".lens" / "lens.db"), "analyze", "1"]
+    )
+
+    assert _analysis_project_dir(arguments) == tmp_path / "ghidra-projects"
 
 
 def test_add_then_list_emits_machine_readable_artifact(tmp_path: Path, capsys) -> None:
