@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -35,8 +36,13 @@ class BSimIndex:
         support = self.install_dir / "support"
         unix_executable = support / "bsim"
         windows_executable = support / "bsim.bat"
-        self._executable = (
-            unix_executable if unix_executable.is_file() else windows_executable
+        candidates = (
+            (windows_executable, unix_executable)
+            if os.name == "nt"
+            else (unix_executable, windows_executable)
+        )
+        self._executable = next(
+            (candidate for candidate in candidates if candidate.is_file()), candidates[0]
         )
         if not self._executable.is_file():
             raise BSimError(f"BSim executable not found: {self._executable}")
